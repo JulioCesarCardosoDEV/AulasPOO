@@ -1,0 +1,194 @@
+import java.io.*;
+import java.util.*;
+
+public class Bankrupt {
+    // Constantes do jogo
+    public static final int MAX_TURNS = 1000;
+    public static final int INITIAL_COINS = 300;
+    public static final int PASS_GO_REWARD = 100;
+    public static final int TOTAL_SIMULATIONS = 300;
+
+    public static void main(String[] args) {
+        List<Property> properties = loadProperties("gameConfig.txt");
+        if (properties == null) return;
+
+        int totalTimeouts = 0;
+        int totalTurns = 0;
+        Map<String, Integer> winsByBehavior = new HashMap<>();
+
+        for (int i = 0; i < TOTAL_SIMULATIONS; i++) {
+            Game game = new Game(properties);
+            SimulationResult result = game.run();
+
+            totalTurns += result.turns;
+            if (result.timeout) totalTimeouts++;
+            winsByBehavior.merge(result.winnerBehavior, 1, Integer::sum);
+        }
+
+        // Saída das estatísticas
+        System.out.println("Total partidas terminadas por time out: " + totalTimeouts);
+        System.out.printf("Média de turnos por partida: %.2f%n", totalTurns / (double) TOTAL_SIMULATIONS);
+        System.out.println("Distribuição de vitórias por comportamento:");
+        winsByBehavior.forEach((behavior, count) -> 
+            System.out.printf(" - %s: %.2f%%%n", behavior, count * 100.0 / TOTAL_SIMULATIONS));
+        System.out.println("Comportamento com mais vitórias: " + 
+            winsByBehavior.entrySet().stream().max(Map.Entry.comparingByValue()).get().getKey());
+    }
+
+    private static List<Property> loadProperties(String filename) {
+        List<Property> properties = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.trim().split("\\s+");
+                properties.add(new Property(Integer.parseInt(parts[0]), Integer.parseInt(parts[1])));
+            }
+        } catch (IOException e) {
+            System.err.println("Erro ao carregar arquivo de configuração: " + e.getMessage());
+            return null;
+        }
+        return properties;
+    }
+}
+
+class Game {
+    private List<Property> properties;
+    private List<Player> players = new ArrayList<>();
+    private int currentPlayerIndex = 0;
+    private int turns = 0;
+
+    Game(List<Property> properties) {
+        this.properties = new ArrayList<>();
+        for (Property p : properties) {
+            this.properties.add(new Property(p.saleValue, p.rentValue));
+        }
+        players.add(new Player("Impulsivo", this::impulsiveStrategy));
+        players.add(new Player("Exigente", this::demandingStrategy));
+        players.add(new Player("Cauteloso", this::cautiousStrategy));
+        players.add(new Player("Aleatório", this::randomStrategy));
+        Collections.shuffle(players);
+    }
+
+    SimulationResult run() {
+        while (players.size() > 1 && turns < Bankrupt.MAX_TURNS) {
+            turns++;
+            Player player = players.get(currentPlayerIndex);
+
+            if (!player.isBankrupt) {
+                playTurn(player);
+            }
+
+            currentPlayerIndex = (currentPlayerIndex + 1) % players.size();
+        }
+
+        players.sort(Comparator.comparingInt(Player::getCoins).reversed());
+        boolean timeout = turns >= Bankrupt.MAX_TURNS;
+        String winnerBehavior = players.get(0).behavior;
+        return new SimulationResult(winnerBehavior, turns, timeout);
+    }
+
+    private void playTurn(Player player) {
+        int diceRoll = new Random().nextInt(6) + 1;
+        player.position = (player.position + diceRoll) % properties.size();
+        if (player.position < diceRoll) player.coins += Bankrupt.PASS_GO_REWARD;
+
+        Property property = properties.get(player.position);
+        if (property.owner == null) {
+            if (player.decideToBuy(property)) {
+                player.buyProperty(property);
+            }
+        } else if (property.owner != player) {
+            player.payRent(property);
+            if (player.isBankrupt) {
+                removePlayer(player);
+            }
+        }
+    }
+
+    private void removePlayer(Player player) {
+        for (Property property : properties) {
+            if (property.owner == player) {
+                property.owner = null;
+            }
+        }
+        players.remove(player);
+    }
+
+    private boolean impulsiveStrategy(Player player, Property property) {
+        return true;
+    }
+
+    private boolean demandingStrategy(Player player, Property property) {
+        return property.rentValue > 50;
+    }
+
+    private boolean cautiousStrategy(Player player, Property property) {
+        return player.coins - property.saleValue >= 80;
+    }
+
+    private boolean randomStrategy(Player player, Property property) {
+        return new Random().nextBoolean();
+    }
+}
+
+class Player {
+    String behavior;
+    int coins = Bankrupt.INITIAL_COINS;
+    int position = 0;
+    boolean isBankrupt = false;
+    Strategy strategy;
+
+    Player(String behavior, Strategy strategy) {
+        this.behavior = behavior;
+        this.strategy = strategy;
+    }
+
+    boolean decideToBuy(Property property) {
+        return coins >= property.saleValue && strategy.decide(this, property);
+    }
+
+    void buyProperty(Property property) {
+        coins -= property.saleValue;
+        property.owner = this;
+    }
+
+    void payRent(Property property) {
+        coins -= property.rentValue;
+        if (coins < 0) {
+            isBankrupt = true;
+        } else {
+            property.owner.coins += property.rentValue;
+        }
+    }
+
+    int getCoins() {
+        return isBankrupt ? 0 : coins;
+    }
+}
+
+class Property {
+    int saleValue;
+    int rentValue;
+    Player owner;
+
+    Property(int saleValue, int rentValue) {
+        this.saleValue = saleValue;
+        this.rentValue = rentValue;
+    }
+}
+
+class SimulationResult {
+    String winnerBehavior;
+    int turns;
+    boolean timeout;
+
+    SimulationResult(String winnerBehavior, int turns, boolean timeout) {
+        this.winnerBehavior = winnerBehavior;
+        this.turns = turns;
+        this.timeout = timeout;
+    }
+}
+
+interface Strategy {
+    boolean decide(Player player, Property property);
+}
